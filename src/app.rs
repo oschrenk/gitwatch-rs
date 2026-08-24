@@ -24,6 +24,7 @@ impl App {
             config.commit_message_script,
             config.ignore_regex.clone(),
             config.dry_run,
+            config.pull_before_push,
             config.remote,
             config.skip_if_merging,
         )?;

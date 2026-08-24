@@ -85,6 +85,10 @@ Options:
       --retries <RETRIES>
           Number of retry attempts when errors occur.
           Use -1 for infinite retries. [default: 3]
+      --skip-if-merging
+          Skip committing while a merge is in progress.
+          Prevents gitwatch from committing a half-resolved merge
+          while conflicts are still being resolved manually.
   -w, --watch <WATCH>
           Enable continuous monitoring of filesystem changes.
           Set to false for one-time commit of current changes. [default: true] [possible values: true, false]

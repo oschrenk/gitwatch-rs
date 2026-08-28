@@ -1,9 +1,11 @@
-use crate::{cli::CliOptions, config_file::ConfigFile, util::normalize_path};
+use crate::{
+    cli::CliOptions, config_file::ConfigFile, net::DEFAULT_TIMEOUT_SECONDS, util::normalize_path,
+};
 use anyhow::{bail, Context, Result};
 use regex::Regex;
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AppConfig {
     pub commit_message: Option<String>,
     pub commit_message_script: Option<PathBuf>,
@@ -11,12 +13,38 @@ pub struct AppConfig {
     pub debounce_seconds: u64,
     pub dry_run: bool,
     pub ignore_regex: Option<Regex>,
+    pub network_timeout_seconds: u64,
     pub pull_before_push: bool,
     pub remote: Option<String>,
     pub repository: PathBuf,
     pub retries: i32,
     pub skip_if_merging: bool,
+    pub ssh_key: Option<PathBuf>,
     pub watch: bool,
+}
+
+impl Default for AppConfig {
+    /// Deliberately hand-written rather than derived: a derived default would
+    /// leave `network_timeout_seconds` at zero, which every network operation
+    /// would then instantly abandon.
+    fn default() -> Self {
+        Self {
+            commit_message: None,
+            commit_message_script: None,
+            commit_on_start: false,
+            debounce_seconds: 0,
+            dry_run: false,
+            ignore_regex: None,
+            network_timeout_seconds: DEFAULT_TIMEOUT_SECONDS,
+            pull_before_push: false,
+            remote: None,
+            repository: PathBuf::new(),
+            retries: 0,
+            skip_if_merging: false,
+            ssh_key: None,
+            watch: false,
+        }
+    }
 }
 
 impl AppConfig {
@@ -78,6 +106,10 @@ impl AppConfig {
             cli_config.ignore_regex
         };
 
+        let network_timeout_seconds = file_config
+            .network_timeout_seconds
+            .unwrap_or(cli_config.network_timeout_seconds);
+
         let pull_before_push = file_config
             .pull_before_push
             .unwrap_or(cli_config.pull_before_push);
@@ -94,6 +126,15 @@ impl AppConfig {
             .skip_if_merging
             .unwrap_or(cli_config.skip_if_merging);
 
+        let ssh_key = file_config
+            .ssh_key
+            .or(cli_config.ssh_key)
+            .map(|key_path| {
+                normalize_path(&key_path)
+                    .context(format!("Invalid ssh key path '{}'", key_path.display()))
+            })
+            .transpose()?;
+
         let watch = file_config.watch.unwrap_or(cli_config.watch);
 
         Ok(Self {
@@ -104,10 +145,12 @@ impl AppConfig {
             debounce_seconds,
             dry_run,
             ignore_regex,
+            network_timeout_seconds,
             pull_before_push,
             remote,
             retries,
             skip_if_merging,
+            ssh_key,
             watch,
         })
     }
@@ -115,6 +158,16 @@ impl AppConfig {
     fn validate(&self) -> Result<()> {
         if self.retries < -1 {
             bail!("Retry count must be >= -1");
+        }
+
+        if self.network_timeout_seconds == 0 {
+            bail!("Network timeout must be > 0 seconds");
+        }
+
+        if let Some(ssh_key) = &self.ssh_key {
+            if !ssh_key.is_file() {
+                bail!("SSH key not found: {}", ssh_key.display());
+            }
         }
 
         if self.pull_before_push && self.remote.is_none() {
@@ -187,8 +240,10 @@ mod tests {
                 && self.dry_run == other.dry_run
                 && self.retries == other.retries
                 && self.commit_on_start == other.commit_on_start
+                && self.network_timeout_seconds == other.network_timeout_seconds
                 && self.pull_before_push == other.pull_before_push
                 && self.skip_if_merging == other.skip_if_merging
+                && self.ssh_key == other.ssh_key
                 && self.watch == other.watch
         }
     }
@@ -211,6 +266,7 @@ mod tests {
             "--remote=origin",
             "--pull-before-push",
             "--skip-if-merging",
+            "--network-timeout-seconds=120",
         ]);
 
         let config = AppConfig::new(watch_opts)?;
@@ -225,9 +281,11 @@ mod tests {
             retries: 2,
             commit_on_start: false,
             watch: true,
+            network_timeout_seconds: 120,
             pull_before_push: true,
             remote: Some("origin".to_string()),
             skip_if_merging: true,
+            ssh_key: None,
         };
 
         assert_eq!(config, expected);
@@ -273,9 +331,11 @@ mod tests {
             watch: true,
             retries: 3,
             dry_run: false,
+            network_timeout_seconds: 60,
             pull_before_push: false,
             remote: None,
             skip_if_merging: false,
+            ssh_key: None,
         };
         assert!(valid_config.validate().is_ok());
 
@@ -344,6 +404,32 @@ mod tests {
             .to_string()
             .contains("Commit message script path is not a file"));
 
+        let zero_timeout = AppConfig {
+            network_timeout_seconds: 0,
+            ..valid_config.clone()
+        };
+        assert!(zero_timeout
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("Network timeout must be > 0 seconds"));
+
+        let missing_ssh_key = AppConfig {
+            ssh_key: Some(temp_dir.path().join("no-such-key")),
+            ..valid_config.clone()
+        };
+        assert!(missing_ssh_key
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("SSH key not found"));
+
+        let existing_ssh_key = AppConfig {
+            ssh_key: Some(valid_script_path.clone()),
+            ..valid_config.clone()
+        };
+        assert!(existing_ssh_key.validate().is_ok());
+
         let pull_without_remote = AppConfig {
             pull_before_push: true,
             remote: None,
@@ -394,9 +480,11 @@ mod tests {
             watch: true,
             retries: 3,
             dry_run: false,
+            network_timeout_seconds: 60,
             pull_before_push: false,
             remote: None,
             skip_if_merging: false,
+            ssh_key: None,
             log_level: LogLevel::Info,
         };
 
@@ -427,9 +515,11 @@ mod tests {
             watch: true,
             retries: 3,
             dry_run: false,
+            network_timeout_seconds: 60,
             pull_before_push: false,
             remote: None,
             skip_if_merging: false,
+            ssh_key: None,
             log_level: LogLevel::Info,
         };
 
@@ -453,6 +543,7 @@ mod tests {
         assert_eq!(config.debounce_seconds, 1);
         assert!(!config.dry_run);
         assert_eq!(config.ignore_regex.unwrap().as_str(), "cli_ignore.*");
+        assert_eq!(config.network_timeout_seconds, 60);
         assert!(!config.pull_before_push);
         assert_eq!(config.remote.unwrap(), "cli_remote");
         assert_eq!(config.retries, 3);
@@ -477,6 +568,7 @@ mod tests {
         assert_eq!(config.debounce_seconds, 5);
         assert!(config.dry_run);
         assert_eq!(config.ignore_regex.unwrap().as_str(), "file_ignore.*");
+        assert_eq!(config.network_timeout_seconds, 90);
         assert!(config.pull_before_push);
         assert_eq!(config.remote.unwrap(), "file_remote");
         assert_eq!(config.retries, 5);
@@ -525,10 +617,12 @@ mod tests {
             dry_run: false,
             ignore_regex: Some(Regex::new("cli_ignore.*").unwrap()),
             log_level: LogLevel::Info,
+            network_timeout_seconds: 60,
             pull_before_push: false,
             remote: Some("cli_remote".to_string()),
             retries: 3,
             skip_if_merging: false,
+            ssh_key: None,
             watch: true,
         })
     }
@@ -541,6 +635,7 @@ mod tests {
         dry_run: true
         ignore_regex: "file_ignore.*"
         log_level: "debug"
+        network_timeout_seconds: 90
         pull_before_push: true
         remote: "file_remote"
         retries: 5

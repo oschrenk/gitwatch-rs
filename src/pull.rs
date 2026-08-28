@@ -1,18 +1,24 @@
+use std::time::Duration;
+
 use anyhow::{bail, Context, Result};
-use auth_git2::GitAuthenticator;
 use git2::{build::CheckoutBuilder, AnnotatedCommit, ErrorCode, Oid, Repository};
 use log::{debug, info};
+
+use crate::{auth::AuthConfig, net::run_with_timeout};
 
 /// Fetch the current branch from the given remote and integrate it into the
 /// local branch, rebasing local commits on top of the remote ones.
 /// Equivalent to `git pull --rebase <remote>` in the original gitwatch.
-pub fn pull_rebase(git_repo: &Repository, remote_name: &str) -> Result<()> {
+pub fn pull_rebase(
+    git_repo: &Repository,
+    remote_name: &str,
+    auth: &AuthConfig,
+    timeout: Duration,
+) -> Result<()> {
     let branch = get_current_branch(git_repo)?;
     debug!("Pulling branch {branch} from remote {remote_name}");
 
-    let mut remote = git_repo.find_remote(remote_name)?;
-    GitAuthenticator::default()
-        .fetch(git_repo, &mut remote, &[&branch], None)
+    fetch(git_repo, remote_name, &branch, auth, timeout)
         .context(format!("Failed to fetch branch '{branch}'"))?;
 
     let fetch_head = git_repo
@@ -31,6 +37,34 @@ pub fn pull_rebase(git_repo: &Repository, remote_name: &str) -> Result<()> {
     }
 
     rebase_onto(git_repo, &upstream)
+}
+
+/// Fetches `branch` under a deadline, so an unresponsive remote cannot wedge
+/// the daemon. See [`run_with_timeout`] for why the work moves to a thread.
+///
+/// The thread opens the repository again rather than sharing this handle:
+/// `git2::Repository` is `Send` but not `Sync`, so it cannot be borrowed across
+/// threads. That costs nothing here, because a fetch communicates through the
+/// repository on disk - the caller reads the FETCH_HEAD it wrote.
+fn fetch(
+    git_repo: &Repository,
+    remote_name: &str,
+    branch: &str,
+    auth: &AuthConfig,
+    timeout: Duration,
+) -> Result<()> {
+    let repo_path = git_repo.path().to_path_buf();
+    let remote_name = remote_name.to_string();
+    let branch = branch.to_string();
+    let auth = auth.clone();
+
+    run_with_timeout("fetch", timeout, move || {
+        let repo = Repository::open(&repo_path)?;
+        let mut remote = repo.find_remote(&remote_name)?;
+        auth.authenticator()
+            .fetch(&repo, &mut remote, &[&branch], None)?;
+        Ok(())
+    })
 }
 
 fn fast_forward(git_repo: &Repository, branch: &str, upstream: &AnnotatedCommit) -> Result<()> {
@@ -123,6 +157,14 @@ mod tests {
 
     use super::*;
 
+    const TEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+    /// Pulls with the default authenticator, as every test here uses a local
+    /// remote that needs no credentials.
+    fn pull(repo: &Repository, remote_name: &str) -> Result<()> {
+        pull_rebase(repo, remote_name, &AuthConfig::default(), TEST_TIMEOUT)
+    }
+
     struct TestSetup {
         _dir: TempDir,
         _remote_dir: TempDir,
@@ -202,7 +244,7 @@ mod tests {
         let setup = setup()?;
         let head_before = setup.repo.head()?.peel_to_commit()?.id();
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo, "origin")?;
 
         assert_eq!(setup.repo.head()?.peel_to_commit()?.id(), head_before);
         Ok(())
@@ -213,7 +255,7 @@ mod tests {
         let setup = setup()?;
         commit_to_remote(&setup, "remote.txt", "remote content")?;
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo, "origin")?;
 
         let head = setup.repo.head()?.peel_to_commit()?;
         assert_eq!(head.message().unwrap_or(""), "remote commit");
@@ -230,7 +272,7 @@ mod tests {
         commit_to_remote(&setup, "remote.txt", "remote content")?;
         commit_file(&setup.repo, "local.txt", "local content", "local commit")?;
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo, "origin")?;
 
         let head = setup.repo.head()?.peel_to_commit()?;
         assert_eq!(head.message().unwrap_or(""), "local commit");
@@ -249,7 +291,7 @@ mod tests {
         let head_before =
             commit_file(&setup.repo, "conflict.txt", "local content", "local commit")?;
 
-        let result = pull_rebase(&setup.repo, "origin");
+        let result = pull(&setup.repo, "origin");
 
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -271,7 +313,7 @@ mod tests {
         let head = setup.repo.head()?.peel_to_commit()?.id();
         setup.repo.set_head_detached(head)?;
 
-        let err = pull_rebase(&setup.repo, "origin").unwrap_err().to_string();
+        let err = pull(&setup.repo, "origin").unwrap_err().to_string();
         assert!(
             err.contains("detached HEAD"),
             "Unexpected error message: {err}"
@@ -282,7 +324,7 @@ mod tests {
     #[test]
     fn test_pull_unknown_remote() -> TestResult {
         let setup = setup()?;
-        assert!(pull_rebase(&setup.repo, "nonexistent").is_err());
+        assert!(pull(&setup.repo, "nonexistent").is_err());
         Ok(())
     }
 }

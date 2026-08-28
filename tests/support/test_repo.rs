@@ -53,9 +53,11 @@ impl TestRepo {
             retries: 0,
             commit_on_start: true,
             watch: false,
+            network_timeout_seconds: 30,
             pull_before_push: false,
             remote: None,
             skip_if_merging: false,
+            ssh_key: None,
         }
     }
 

@@ -7,6 +7,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use log::{debug, error, info, trace, warn};
+
+use crate::net::Unrecoverable;
 use notify_debouncer_full::{
     new_debouncer,
     notify::{EventKind, RecursiveMode},
@@ -96,6 +98,12 @@ impl FileWatcher {
                 match on_change(&paths) {
                     Ok(()) => break,
                     Err(e) => {
+                        // Retrying cannot help, and carrying on would leave the
+                        // daemon committing without ever pushing. Ending the
+                        // watch lets the supervisor restart a working process.
+                        if e.downcast_ref::<Unrecoverable>().is_some() {
+                            return Err(e);
+                        }
                         if retry_count == self.retry_count {
                             return Err(e);
                         }

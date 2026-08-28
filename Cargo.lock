@@ -99,6 +99,7 @@ checksum = "aec364a6ee335b23a7e77703100f5103965810f91a9ef6319a004a7e7b8e2b66"
 dependencies = [
  "dirs",
  "git2",
+ "log",
  "terminal-prompt",
 ]
 

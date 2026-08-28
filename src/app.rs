@@ -1,10 +1,10 @@
 use crate::{app_config::AppConfig, filter::PathFilter};
-use std::{path::PathBuf, sync::mpsc::Receiver};
+use std::{path::PathBuf, sync::mpsc::Receiver, time::Duration};
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
 
-use crate::{repo::GitwatchRepo, watcher::FileWatcher};
+use crate::{auth::AuthConfig, repo::GitwatchRepo, watcher::FileWatcher};
 
 pub struct App {
     commit_on_start: bool,
@@ -27,6 +27,8 @@ impl App {
             config.pull_before_push,
             config.remote,
             config.skip_if_merging,
+            AuthConfig::new(config.ssh_key),
+            Duration::from_secs(config.network_timeout_seconds),
         )?;
         let watcher = FileWatcher::new(config.debounce_seconds, config.retries);
         let path_filter = PathFilter::new(repo_path, config.ignore_regex)?;

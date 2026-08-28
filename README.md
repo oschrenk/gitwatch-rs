@@ -79,6 +79,11 @@ Options:
           Example: "\.tmp$" to ignore temporary files.
       --log-level <LOG_LEVEL>
           Set the log level [default: info] [possible values: trace, debug, info, warn, error]
+      --network-timeout-seconds <NETWORK_TIMEOUT_SECONDS>
+          Seconds to allow a fetch or push before giving up on it.
+          Guards against a remote that accepts the connection and then stops
+          answering, which would otherwise block the daemon indefinitely.
+          A timed-out operation is reported as an error, so --retries applies. [default: 60]
       --pull-before-push
           Pull from the remote before pushing (requires --remote).
           Fetches the current branch and rebases the local commits on top of it,
@@ -89,6 +94,11 @@ Options:
       --retries <RETRIES>
           Number of retry attempts when errors occur.
           Use -1 for infinite retries. [default: 3]
+      --ssh-key <SSH_KEY>
+          Path to the SSH private key to authenticate with.
+          Using it also disables the SSH agent and all interactive prompts,
+          so a locked agent can neither block nor be consulted.
+          Without it, the agent, credential helper and default key paths are tried.
       --skip-if-merging
           Skip committing while a merge is in progress.
           Prevents gitwatch from committing a half-resolved merge
@@ -107,6 +117,30 @@ See [docs/gitwatch.example.yaml](docs/gitwatch.example.yaml) for reference.
 
 
 ### Tips
+
+<details><summary><b>Authenticate without an SSH agent</b></summary>
+
+An unattended `gitwatch` should not depend on an interactive agent. If the agent
+is locked when a push comes due, the push fails; worse, an agent that accepts the
+connection and then stops answering blocks `libssh2` with no timeout of its own.
+
+`--ssh-key` avoids the agent entirely:
+
+```sh
+gitwatch watch --remote=origin --ssh-key ~/.ssh/gitwatch_ed25519 /path/to/repo
+```
+
+Two things are worth knowing:
+
+- The key must have no passphrase, since nothing can be prompted. Scope it
+  narrowly to compensate - on GitHub, register it as a repository
+  [deploy key](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/managing-deploy-keys)
+  rather than an account key, so it reaches one repository and no other.
+- `libgit2` does not read `~/.ssh/config`, so `Host` aliases, `IdentityFile` and
+  `IdentitiesOnly` have no effect here - `--ssh-key` is the only way to select a
+  key. It does still verify `~/.ssh/known_hosts`, which must contain the host.
+
+</details>
 
 <details><summary><b>Disable GPG commit signing for your watched repo</b></summary>
 

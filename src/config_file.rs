@@ -19,10 +19,12 @@ pub struct ConfigFile {
     pub dry_run: Option<bool>,
     #[serde(default, with = "serde_regex")]
     pub ignore_regex: Option<Regex>,
+    pub network_timeout_seconds: Option<u64>,
     pub pull_before_push: Option<bool>,
     pub remote: Option<String>,
     pub retries: Option<i32>,
     pub skip_if_merging: Option<bool>,
+    pub ssh_key: Option<PathBuf>,
     pub watch: Option<bool>,
 }
 

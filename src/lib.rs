@@ -1,10 +1,12 @@
 pub mod app;
 pub mod app_config;
+pub mod auth;
 pub mod cli;
 pub mod commit_message;
 pub mod config_file;
 pub mod filter;
 pub mod logger;
+pub mod net;
 pub mod pull;
 pub mod repo;
 pub mod util;

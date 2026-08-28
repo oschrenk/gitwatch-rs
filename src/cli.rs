@@ -6,6 +6,8 @@ use log::LevelFilter;
 use regex::Regex;
 use serde::Deserialize;
 
+use crate::net::DEFAULT_TIMEOUT_SECONDS;
+
 #[derive(Parser)]
 #[command(
     name = "gitwatch",
@@ -62,6 +64,17 @@ pub struct CliOptions {
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     pub log_level: LogLevel,
 
+    /// Seconds to allow a fetch or push before giving up on it.
+    /// Guards against a remote that accepts the connection and then stops
+    /// answering, which would otherwise block the daemon indefinitely.
+    /// A timed-out operation is reported as an error, so --retries applies.
+    #[clap(
+        long = "network-timeout-seconds",
+        default_value_t = DEFAULT_TIMEOUT_SECONDS,
+        verbatim_doc_comment
+    )]
+    pub network_timeout_seconds: u64,
+
     /// Pull from the remote before pushing (requires --remote).
     /// Fetches the current branch and rebases the local commits on top of it,
     /// so a remote that has moved ahead does not break the push.
@@ -81,6 +94,13 @@ pub struct CliOptions {
     /// Use -1 for infinite retries.
     #[clap(long = "retries", default_value = "3", verbatim_doc_comment)]
     pub retries: i32,
+
+    /// Path to the SSH private key to authenticate with.
+    /// Using it also disables the SSH agent and all interactive prompts,
+    /// so a locked agent can neither block nor be consulted.
+    /// Without it, the agent, credential helper and default key paths are tried.
+    #[clap(long = "ssh-key", verbatim_doc_comment)]
+    pub ssh_key: Option<PathBuf>,
 
     /// Skip committing while a merge is in progress.
     /// Prevents gitwatch from committing a half-resolved merge

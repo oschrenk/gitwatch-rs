@@ -1,23 +1,28 @@
 use std::{
     fmt::{self, Display, Formatter},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{bail, Context, Result};
-use auth_git2::GitAuthenticator;
 use git2::{Oid, Repository, RepositoryState, Status, StatusOptions};
 use indoc::formatdoc;
 use log::{debug, info, trace, warn};
 use paris::formatter::colorize_string;
 use regex::Regex;
 
-use crate::{commit_message::generate_commit_message, pull::pull_rebase};
+use crate::{
+    auth::AuthConfig, commit_message::generate_commit_message, net::run_with_timeout,
+    pull::pull_rebase,
+};
 
 pub struct GitwatchRepo {
+    auth: AuthConfig,
     commit_message: Option<String>,
     commit_message_script: Option<PathBuf>,
     dry_run: bool,
     ignore_regex: Option<Regex>,
+    network_timeout: Duration,
     pull_before_push: bool,
     remote: Option<String>,
     skip_if_merging: bool,
@@ -36,16 +41,20 @@ impl GitwatchRepo {
         pull_before_push: bool,
         remote: Option<String>,
         skip_if_merging: bool,
+        auth: AuthConfig,
+        network_timeout: Duration,
     ) -> Result<Self> {
         debug!("Opening git repository {}", repo_path.display());
         let repo = Repository::open(repo_path)?;
         let gitwatch_repo = Self {
             git_repo: repo,
             repo_path: repo_path.to_path_buf(),
+            auth,
             commit_message,
             commit_message_script,
             dry_run,
             ignore_regex,
+            network_timeout,
             pull_before_push,
             remote,
             skip_if_merging,
@@ -149,7 +158,7 @@ impl GitwatchRepo {
 
         if let Some(remote) = &self.remote {
             if self.pull_before_push {
-                pull_rebase(&self.git_repo, remote)
+                pull_rebase(&self.git_repo, remote, &self.auth, self.network_timeout)
                     .context(format!("Failed to pull from remote '{remote}'"))?;
             }
             self.push_changes(remote)
@@ -263,16 +272,29 @@ impl GitwatchRepo {
         Ok(())
     }
 
+    /// Pushes the current branch under a deadline, so an unresponsive remote
+    /// cannot wedge the daemon.
+    ///
+    /// Like the fetch in [`pull_rebase`], the push runs on its own thread with
+    /// its own repository handle - see [`run_with_timeout`] for why.
     fn push_changes(&self, remote_name: &str) -> Result<()> {
         debug!("Pushing to remote {remote_name}");
-        let mut remote = self.git_repo.find_remote(remote_name)?;
 
         // push current branch
         let refspec = self.get_current_refspec()?;
         trace!("Pushing refspec: {refspec}");
 
-        let auth = GitAuthenticator::default();
-        auth.push(&self.git_repo, &mut remote, &[&refspec])?;
+        let repo_path = self.git_repo.path().to_path_buf();
+        let remote_name_owned = remote_name.to_string();
+        let auth = self.auth.clone();
+
+        run_with_timeout("push", self.network_timeout, move || {
+            let repo = Repository::open(&repo_path)?;
+            let mut remote = repo.find_remote(&remote_name_owned)?;
+            auth.authenticator().push(&repo, &mut remote, &[&refspec])?;
+            Ok(())
+        })?;
+
         info!("Pushed changes to {remote_name}");
         Ok(())
     }
@@ -329,6 +351,30 @@ mod tests {
 
     static INIT: Once = Once::new();
 
+    /// Opens a repo with the defaults every test here shares, so each test only
+    /// spells out the settings it actually exercises.
+    fn open_repo(
+        path: &Path,
+        commit_message: Option<&str>,
+        commit_message_script: Option<PathBuf>,
+        ignore_regex: Option<Regex>,
+        remote: Option<&str>,
+        skip_if_merging: bool,
+    ) -> Result<GitwatchRepo> {
+        GitwatchRepo::new(
+            path,
+            commit_message.map(str::to_string),
+            commit_message_script,
+            ignore_regex,
+            false,
+            false,
+            remote.map(str::to_string),
+            skip_if_merging,
+            AuthConfig::default(),
+            Duration::from_secs(30),
+        )
+    }
+
     fn init_test_repo() -> Result<TempDir> {
         INIT.call_once(|| {
             setup_logger(LogLevel::Trace).unwrap();
@@ -370,16 +416,7 @@ mod tests {
     #[test]
     fn test_empty_repo() -> TestResult {
         let temp_dir = tempfile::tempdir()?;
-        let result = GitwatchRepo::new(
-            temp_dir.path(),
-            Some("test".to_string()),
-            None,
-            None,
-            false,
-            false,
-            None,
-            false,
-        );
+        let result = open_repo(temp_dir.path(), Some("test"), None, None, None, false);
         assert!(result.is_err());
         let err_str = result.err().unwrap().to_string();
         assert!(
@@ -393,13 +430,11 @@ mod tests {
     fn test_invalid_commit_message_script() -> TestResult {
         let temp_dir = init_test_repo()?;
 
-        let result = GitwatchRepo::new(
+        let result = open_repo(
             temp_dir.path(),
             None,
             Some(PathBuf::from("/nonexistent/script")),
             None,
-            false,
-            false,
             None,
             false,
         );
@@ -413,14 +448,12 @@ mod tests {
     fn test_invalid_remote() -> TestResult {
         let temp_dir = init_test_repo()?;
 
-        let result = GitwatchRepo::new(
+        let result = open_repo(
             temp_dir.path(),
-            Some("test".to_string()),
+            Some("test"),
             None,
             None,
-            false,
-            false,
-            Some("nonexistent-remote".to_string()),
+            Some("nonexistent-remote"),
             false,
         );
         assert!(result.is_err());
@@ -435,14 +468,12 @@ mod tests {
     #[test]
     fn test_commit_and_push() -> TestResult {
         let temp_dir = init_test_repo()?;
-        let repo = GitwatchRepo::new(
+        let repo = open_repo(
             temp_dir.path(),
-            Some("test".to_string()),
+            Some("test"),
             None,
             None,
-            false,
-            false,
-            Some("origin".to_string()),
+            Some("origin"),
             false,
         )?;
 
@@ -470,16 +501,7 @@ mod tests {
     #[test]
     fn test_skip_if_merging() -> TestResult {
         let temp_dir = init_test_repo()?;
-        let repo = GitwatchRepo::new(
-            temp_dir.path(),
-            Some("test".to_string()),
-            None,
-            None,
-            false,
-            false,
-            None,
-            true,
-        )?;
+        let repo = open_repo(temp_dir.path(), Some("test"), None, None, None, true)?;
         create_initial_commit(temp_dir.path(), &repo.git_repo)?;
         let head_before = repo.git_repo.head()?.peel_to_commit()?.id();
 
@@ -504,16 +526,7 @@ mod tests {
         );
 
         // without the flag, the very same state is committed
-        let repo = GitwatchRepo::new(
-            temp_dir.path(),
-            Some("test".to_string()),
-            None,
-            None,
-            false,
-            false,
-            None,
-            false,
-        )?;
+        let repo = open_repo(temp_dir.path(), Some("test"), None, None, None, false)?;
         repo.process_changes()?;
         assert_ne!(
             repo.git_repo.head()?.peel_to_commit()?.id(),
@@ -526,13 +539,11 @@ mod tests {
     #[test]
     fn test_ignore_regex() -> Result<()> {
         let temp_dir = init_test_repo()?;
-        let repo = GitwatchRepo::new(
+        let repo = open_repo(
             temp_dir.path(),
-            Some("test".to_string()),
+            Some("test"),
             None,
             Some(Regex::new(".*foo.txt.*")?),
-            false,
-            false,
             None,
             false,
         )?;

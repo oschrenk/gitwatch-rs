@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub debounce_seconds: u64,
     pub dry_run: bool,
     pub ignore_regex: Option<Regex>,
+    pub pull_before_push: bool,
     pub remote: Option<String>,
     pub repository: PathBuf,
     pub retries: i32,
@@ -78,6 +79,10 @@ impl AppConfig {
             cli_config.ignore_regex
         };
 
+        let pull_before_push = file_config
+            .pull_before_push
+            .unwrap_or(cli_config.pull_before_push);
+
         let remote = if let Some(remote) = file_config.remote {
             Some(remote)
         } else {
@@ -109,6 +114,7 @@ impl AppConfig {
             debounce_seconds,
             dry_run,
             ignore_regex,
+            pull_before_push,
             remote,
             retries,
             skip_if_merging,
@@ -120,6 +126,10 @@ impl AppConfig {
     fn validate(&self) -> Result<()> {
         if self.retries < -1 {
             bail!("Retry count must be >= -1");
+        }
+
+        if self.pull_before_push && self.remote.is_none() {
+            bail!("pull-before-push requires a remote to be set");
         }
 
         if !self.repository.exists() {
@@ -194,6 +204,7 @@ mod tests {
                 && self.dry_run == other.dry_run
                 && self.retries == other.retries
                 && self.commit_on_start == other.commit_on_start
+                && self.pull_before_push == other.pull_before_push
                 && self.skip_if_merging == other.skip_if_merging
                 && self.watch == other.watch
         }
@@ -215,6 +226,7 @@ mod tests {
             "--watch=true",
             "--dry-run",
             "--remote=origin",
+            "--pull-before-push",
             "--skip-if-merging",
         ]);
 
@@ -231,6 +243,7 @@ mod tests {
             ssh_key: None,
             commit_on_start: false,
             watch: true,
+            pull_before_push: true,
             remote: Some("origin".to_string()),
             skip_if_merging: true,
         };
@@ -309,6 +322,7 @@ mod tests {
             retries: 3,
             ssh_key: None,
             dry_run: false,
+            pull_before_push: false,
             remote: None,
             skip_if_merging: false,
         };
@@ -379,6 +393,24 @@ mod tests {
             .to_string()
             .contains("Commit message script path is not a file"));
 
+        let pull_without_remote = AppConfig {
+            pull_before_push: true,
+            remote: None,
+            ..valid_config.clone()
+        };
+        assert!(pull_without_remote
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("pull-before-push requires a remote to be set"));
+
+        let pull_with_remote = AppConfig {
+            pull_before_push: true,
+            remote: Some("origin".to_string()),
+            ..valid_config.clone()
+        };
+        assert!(pull_with_remote.validate().is_ok());
+
         let nonexistent_repo_path = AppConfig {
             repository: PathBuf::from("/nonexistent/path"),
             ..valid_config.clone()
@@ -412,6 +444,7 @@ mod tests {
             retries: 3,
             ssh_key: None,
             dry_run: false,
+            pull_before_push: false,
             remote: None,
             skip_if_merging: false,
             log_level: LogLevel::Info,
@@ -445,6 +478,7 @@ mod tests {
             retries: 3,
             ssh_key: None,
             dry_run: false,
+            pull_before_push: false,
             remote: None,
             skip_if_merging: false,
             log_level: LogLevel::Info,
@@ -470,6 +504,7 @@ mod tests {
         assert_eq!(config.debounce_seconds, 1);
         assert!(!config.dry_run);
         assert_eq!(config.ignore_regex.unwrap().as_str(), "cli_ignore.*");
+        assert!(!config.pull_before_push);
         assert_eq!(config.remote.unwrap(), "cli_remote");
         assert_eq!(config.retries, 3);
         assert!(!config.skip_if_merging);
@@ -493,6 +528,7 @@ mod tests {
         assert_eq!(config.debounce_seconds, 5);
         assert!(config.dry_run);
         assert_eq!(config.ignore_regex.unwrap().as_str(), "file_ignore.*");
+        assert!(config.pull_before_push);
         assert_eq!(config.remote.unwrap(), "file_remote");
         assert_eq!(config.retries, 5);
         assert!(config.skip_if_merging);
@@ -540,6 +576,7 @@ mod tests {
             dry_run: false,
             ignore_regex: Some(Regex::new("cli_ignore.*").unwrap()),
             log_level: LogLevel::Info,
+            pull_before_push: false,
             remote: Some("cli_remote".to_string()),
             retries: 3,
             skip_if_merging: false,
@@ -556,6 +593,7 @@ mod tests {
         dry_run: true
         ignore_regex: "file_ignore.*"
         log_level: "debug"
+        pull_before_push: true
         remote: "file_remote"
         retries: 5
         skip_if_merging: true

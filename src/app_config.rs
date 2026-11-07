@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub dry_run: bool,
     pub ignore_regex: Option<Regex>,
     pub pull_before_push: bool,
+    pub pull_interval_seconds: Option<u64>,
     pub remote: Option<String>,
     pub repository: PathBuf,
     pub retries: i32,
@@ -83,6 +84,10 @@ impl AppConfig {
             .pull_before_push
             .unwrap_or(cli_config.pull_before_push);
 
+        let pull_interval_seconds = file_config
+            .pull_interval_seconds
+            .or(cli_config.pull_interval_seconds);
+
         let remote = if let Some(remote) = file_config.remote {
             Some(remote)
         } else {
@@ -115,6 +120,7 @@ impl AppConfig {
             dry_run,
             ignore_regex,
             pull_before_push,
+            pull_interval_seconds,
             remote,
             retries,
             skip_if_merging,
@@ -130,6 +136,14 @@ impl AppConfig {
 
         if self.pull_before_push && self.remote.is_none() {
             bail!("pull-before-push requires a remote to be set");
+        }
+
+        match self.pull_interval_seconds {
+            Some(_) if self.remote.is_none() => {
+                bail!("pull-interval-seconds requires a remote to be set")
+            }
+            Some(0) => bail!("pull-interval-seconds must be > 0"),
+            _ => {}
         }
 
         if !self.repository.exists() {
@@ -244,6 +258,7 @@ mod tests {
             commit_on_start: false,
             watch: true,
             pull_before_push: true,
+            pull_interval_seconds: None,
             remote: Some("origin".to_string()),
             skip_if_merging: true,
         };
@@ -323,6 +338,7 @@ mod tests {
             ssh_key: None,
             dry_run: false,
             pull_before_push: false,
+            pull_interval_seconds: None,
             remote: None,
             skip_if_merging: false,
         };
@@ -411,6 +427,28 @@ mod tests {
         };
         assert!(pull_with_remote.validate().is_ok());
 
+        let interval_without_remote = AppConfig {
+            pull_interval_seconds: Some(60),
+            remote: None,
+            ..valid_config.clone()
+        };
+        assert!(interval_without_remote
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("pull-interval-seconds requires a remote to be set"));
+
+        let zero_interval = AppConfig {
+            pull_interval_seconds: Some(0),
+            remote: Some("origin".to_string()),
+            ..valid_config.clone()
+        };
+        assert!(zero_interval
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("pull-interval-seconds must be > 0"));
+
         let nonexistent_repo_path = AppConfig {
             repository: PathBuf::from("/nonexistent/path"),
             ..valid_config.clone()
@@ -445,6 +483,7 @@ mod tests {
             ssh_key: None,
             dry_run: false,
             pull_before_push: false,
+            pull_interval_seconds: None,
             remote: None,
             skip_if_merging: false,
             log_level: LogLevel::Info,
@@ -479,6 +518,7 @@ mod tests {
             ssh_key: None,
             dry_run: false,
             pull_before_push: false,
+            pull_interval_seconds: None,
             remote: None,
             skip_if_merging: false,
             log_level: LogLevel::Info,
@@ -577,6 +617,7 @@ mod tests {
             ignore_regex: Some(Regex::new("cli_ignore.*").unwrap()),
             log_level: LogLevel::Info,
             pull_before_push: false,
+            pull_interval_seconds: None,
             remote: Some("cli_remote".to_string()),
             retries: 3,
             skip_if_merging: false,

@@ -1,5 +1,5 @@
 use crate::{app_config::AppConfig, filter::PathFilter};
-use std::{path::PathBuf, sync::mpsc::Receiver};
+use std::{path::PathBuf, sync::mpsc::Receiver, time::Duration};
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
@@ -29,7 +29,11 @@ impl App {
             config.ssh_key,
             config.skip_if_merging,
         )?;
-        let watcher = FileWatcher::new(config.debounce_seconds, config.retries);
+        let watcher = FileWatcher::new(
+            config.debounce_seconds,
+            config.retries,
+            config.pull_interval_seconds.map(Duration::from_secs),
+        );
         let path_filter = PathFilter::new(repo_path, config.ignore_regex)?;
 
         Ok(Self {
@@ -61,6 +65,11 @@ impl App {
                 self.repo.process_changes()
             },
             |path| self.path_filter.is_path_ignored(path),
+            || {
+                if let Err(e) = self.repo.pull_if_clean() {
+                    warn!("Scheduled pull failed: {e:#}");
+                }
+            },
             shutdown_rx,
         )
     }

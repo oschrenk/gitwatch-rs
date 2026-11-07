@@ -5,3 +5,5 @@ pub const TEST_COMMIT_MESSAGE: &str = "test commit message";
 pub const TEST_GENERATED_COMMIT_MESSAGE: &str = "generated commit message";
 pub const TEST_REMOTE: &str = "origin";
 pub const REMOTE_COMMIT_MESSAGE: &str = "remote commit message";
+pub const TEST_PULL_INTERVAL_SECONDS: u64 = 1;
+pub const TEST_PENDING_DEBOUNCE_SECONDS: u64 = 60;

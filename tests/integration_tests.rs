@@ -5,13 +5,17 @@ use gitwatch_rs::{app::App, app_config::AppConfig, cli::LogLevel, logger::setup_
 use regex::Regex;
 use support::{
     AppRunner, TestRepo, IGNORED_FILE_NAME, REMOTE_COMMIT_MESSAGE, TEST_COMMIT_MESSAGE,
-    TEST_FILE_CONTENT, TEST_FILE_NAME, TEST_GENERATED_COMMIT_MESSAGE, TEST_REMOTE,
+    TEST_FILE_CONTENT, TEST_FILE_NAME, TEST_GENERATED_COMMIT_MESSAGE,
+    TEST_PENDING_DEBOUNCE_SECONDS, TEST_PULL_INTERVAL_SECONDS, TEST_REMOTE,
 };
 use testresult::TestResult;
 
 mod support;
 
 static INIT: Once = Once::new();
+
+/// Long enough for several scheduled pulls at `TEST_PULL_INTERVAL_SECONDS`
+const SKIPPED_PULL_WAIT: Duration = Duration::from_secs(3);
 
 fn setup() {
     INIT.call_once(|| {
@@ -268,6 +272,65 @@ fn test_pull_before_push() -> TestResult {
 
     // the remote change is now present locally
     assert!(test_repo.dir.path().join("remote.txt").exists());
+    Ok(())
+}
+
+#[test]
+fn test_pull_interval_updates_idle_clone() -> TestResult {
+    setup();
+
+    let test_repo = TestRepo::new()?;
+    test_repo.push_to_remote()?;
+    let initial_head = test_repo.repo.head()?.peel_to_commit()?.id();
+
+    let config = AppConfig {
+        watch: true,
+        remote: Some(TEST_REMOTE.to_string()),
+        pull_interval_seconds: Some(TEST_PULL_INTERVAL_SECONDS),
+        ..test_repo.default_app_config()
+    };
+    let runner = AppRunner::run(App::new(config)?);
+
+    test_repo.commit_to_remote("remote.txt", "remote content", REMOTE_COMMIT_MESSAGE)?;
+    test_repo.verify_commits(REMOTE_COMMIT_MESSAGE, 1)?;
+
+    let head = test_repo.repo.head()?.peel_to_commit()?;
+    assert_eq!(head.parent_id(0)?, initial_head);
+    assert!(test_repo.dir.path().join("remote.txt").exists());
+
+    runner.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn test_pull_interval_skips_dirty_tree() -> TestResult {
+    setup();
+
+    let test_repo = TestRepo::new()?;
+    test_repo.push_to_remote()?;
+    test_repo.commit_to_remote("remote.txt", "remote content", REMOTE_COMMIT_MESSAGE)?;
+    let initial_head = test_repo.repo.head()?.peel_to_commit()?.id();
+
+    let config = AppConfig {
+        watch: true,
+        debounce_seconds: TEST_PENDING_DEBOUNCE_SECONDS,
+        remote: Some(TEST_REMOTE.to_string()),
+        pull_interval_seconds: Some(TEST_PULL_INTERVAL_SECONDS),
+        ..test_repo.default_app_config()
+    };
+    let runner = AppRunner::run(App::new(config)?);
+
+    // the edit stays pending in the debouncer, so the tree is dirty at every scheduled pull
+    test_repo.write_file(TEST_FILE_NAME, TEST_FILE_CONTENT)?;
+    thread::sleep(SKIPPED_PULL_WAIT);
+
+    assert_eq!(test_repo.repo.head()?.peel_to_commit()?.id(), initial_head);
+    assert_eq!(
+        std::fs::read_to_string(test_repo.dir.path().join(TEST_FILE_NAME))?,
+        TEST_FILE_CONTENT
+    );
+
+    runner.shutdown()?;
     Ok(())
 }
 

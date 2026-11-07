@@ -2,7 +2,7 @@ use std::{
     path::{Path, PathBuf},
     sync::mpsc::{self, Receiver},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -15,27 +15,32 @@ use notify_debouncer_full::{
 
 pub struct FileWatcher {
     debounce_seconds: u64,
+    idle_interval: Option<Duration>,
     retry_count: i32,
 }
 
 impl FileWatcher {
-    pub fn new(debounce_seconds: u64, retry_count: i32) -> Self {
+    pub fn new(debounce_seconds: u64, retry_count: i32, idle_interval: Option<Duration>) -> Self {
         Self {
             debounce_seconds,
+            idle_interval,
             retry_count,
         }
     }
 
-    pub fn watch<F, P>(
+    /// `on_idle` runs every `idle_interval` while no change event arrives.
+    pub fn watch<F, P, I>(
         &self,
         path: &Path,
         on_change: F,
         is_path_ignored: P,
+        on_idle: I,
         shutdown_rx: Option<Receiver<()>>,
     ) -> Result<()>
     where
         F: Fn(&Vec<PathBuf>) -> Result<()>,
         P: Fn(&Path) -> bool,
+        I: Fn(),
     {
         let (tx, rx) = mpsc::channel();
 
@@ -46,6 +51,7 @@ impl FileWatcher {
             .context("Failed to watch path")?;
         info!("Watching for changes...");
 
+        let mut last_idle_run = Instant::now();
         loop {
             if let Some(rx) = &shutdown_rx {
                 if rx.try_recv().is_ok() {
@@ -64,7 +70,14 @@ impl FileWatcher {
                     }
                     Err(errors) => errors.iter().for_each(|error| error!("{error:?}")),
                 },
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(interval) = self.idle_interval {
+                        if last_idle_run.elapsed() >= interval {
+                            on_idle();
+                            last_idle_run = Instant::now();
+                        }
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -138,13 +151,13 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().to_path_buf();
 
-        let watcher = FileWatcher::new(0, 2);
+        let watcher = FileWatcher::new(0, 2, None);
 
         // delete the directory being watched
         fs::remove_dir_all(&path)?;
 
         // try to watch - should get notify error
-        let result = watcher.watch(&path, |_| Ok(()), |_path| false, None);
+        let result = watcher.watch(&path, |_| Ok(()), |_path| false, || {}, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
 
@@ -165,7 +178,7 @@ mod tests {
         let attempt_count = Arc::new(AtomicU32::new(0));
         let attempt_count_clone = attempt_count.clone();
 
-        let watcher = FileWatcher::new(0, 2);
+        let watcher = FileWatcher::new(0, 2, None);
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
         // start watching in a separate thread
@@ -178,6 +191,7 @@ mod tests {
                     bail!("Mock callback error")
                 },
                 |_path| false,
+                || {},
                 Some(shutdown_rx),
             )
         });
@@ -218,7 +232,7 @@ mod tests {
         // create channels for shutdown signal
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
 
-        let watcher = FileWatcher::new(1, 0);
+        let watcher = FileWatcher::new(1, 0, None);
 
         // Create a counter to track number of changes
         let counter = Arc::new(AtomicU32::new(0));
@@ -233,6 +247,7 @@ mod tests {
                     Ok(())
                 },
                 |_| false,
+                || {},
                 Some(shutdown_rx),
             )
         });
@@ -265,7 +280,7 @@ mod tests {
     #[test]
     fn test_all_paths_ignored() -> Result<()> {
         let was_called = AtomicBool::new(false);
-        let watcher = FileWatcher::new(0, 0);
+        let watcher = FileWatcher::new(0, 0, None);
 
         let events = vec![
             DebouncedEvent::new(

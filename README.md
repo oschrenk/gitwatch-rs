@@ -83,6 +83,9 @@ Options:
           Pull from the remote before pushing (requires --remote).
           Fetches the current branch and rebases the local commits on top of it,
           so a remote that has moved ahead does not break the push.
+      --pull-interval-seconds <PULL_INTERVAL_SECONDS>
+          Pull from the remote every N seconds while no change is pending
+          (requires --remote). Off when unset.
   -r, --remote <REMOTE>
           Name of the remote to push to (if specified).
           Example: "origin".

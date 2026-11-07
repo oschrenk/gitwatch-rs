@@ -28,6 +28,10 @@ ignore_regex: null
 # so a remote that has moved ahead does not break the push.
 pull_before_push: false
 
+# Pull from the remote every N seconds while no change is pending
+# (requires a remote to be set). Off when unset.
+pull_interval_seconds: null
+
 # Name of the remote to push to (if specified)
 # Example: "origin"
 remote: null

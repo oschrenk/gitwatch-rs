@@ -306,4 +306,22 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn test_pull_fast_forward_refuses_to_overwrite_local_edit() -> TestResult {
+        let setup = setup()?;
+        commit_to_remote(&setup, "initial.txt", "remote content")?;
+        let head_before = setup.repo.head()?.peel_to_commit()?.id();
+        let workdir = setup.repo.workdir().unwrap();
+        fs::write(workdir.join("initial.txt"), "local edit")?;
+
+        assert!(pull(&setup.repo).is_err());
+
+        assert_eq!(
+            fs::read_to_string(workdir.join("initial.txt"))?,
+            "local edit"
+        );
+        assert_eq!(setup.repo.head()?.peel_to_commit()?.id(), head_before);
+        Ok(())
+    }
 }

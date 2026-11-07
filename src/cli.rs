@@ -72,6 +72,11 @@ pub struct CliOptions {
     )]
     pub pull_before_push: bool,
 
+    /// Pull from the remote every N seconds while no change is pending
+    /// (requires --remote). Off when unset.
+    #[clap(long = "pull-interval-seconds", verbatim_doc_comment)]
+    pub pull_interval_seconds: Option<u64>,
+
     /// Name of the remote to push to (if specified).
     /// Example: "origin".
     #[clap(short = 'r', long = "remote", verbatim_doc_comment)]

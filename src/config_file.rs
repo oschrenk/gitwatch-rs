@@ -20,6 +20,7 @@ pub struct ConfigFile {
     #[serde(default, with = "serde_regex")]
     pub ignore_regex: Option<Regex>,
     pub pull_before_push: Option<bool>,
+    pub pull_interval_seconds: Option<u64>,
     pub remote: Option<String>,
     pub retries: Option<i32>,
     pub skip_if_merging: Option<bool>,
@@ -82,6 +83,7 @@ mod tests {
         dry_run: true
         ignore_regex: "test.*"
         pull_before_push: true
+        pull_interval_seconds: 30
         remote: "origin"
         retries: 3
         skip_if_merging: true
@@ -103,6 +105,7 @@ mod tests {
         assert_eq!(config.dry_run, Some(true));
         assert_eq!(config.ignore_regex.as_ref().unwrap().as_str(), "test.*");
         assert_eq!(config.pull_before_push, Some(true));
+        assert_eq!(config.pull_interval_seconds, Some(30));
         assert_eq!(config.remote, Some("origin".to_string()));
         assert_eq!(config.retries, Some(3));
         assert_eq!(config.skip_if_merging, Some(true));

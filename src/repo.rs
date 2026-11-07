@@ -183,6 +183,21 @@ impl GitwatchRepo {
         Ok(())
     }
 
+    /// Pulls from the remote, unless the working tree has changes that a checkout could overwrite.
+    pub fn pull_if_clean(&self) -> Result<()> {
+        let Some(remote) = &self.remote else {
+            return Ok(());
+        };
+        if self.dry_run || self.is_merging() || !self.get_statuses()?.is_empty() {
+            debug!("Skipping scheduled pull - working tree has pending changes");
+            return Ok(());
+        }
+        pull_rebase(&self.git_repo, remote, |branch| {
+            self.fetch_branch(remote, branch)
+        })
+        .context(format!("Failed to pull from remote '{remote}'"))
+    }
+
     fn is_merging(&self) -> bool {
         self.git_repo.state() != RepositoryState::Clean
     }

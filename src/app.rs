@@ -26,6 +26,7 @@ impl App {
             config.dry_run,
             config.remote,
             config.ssh_key,
+            config.skip_if_merging,
         )?;
         let watcher = FileWatcher::new(config.debounce_seconds, config.retries);
         let path_filter = PathFilter::new(repo_path, config.ignore_regex)?;

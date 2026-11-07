@@ -85,6 +85,10 @@ Options:
       --retries <RETRIES>
           Number of retry attempts when errors occur.
           Use -1 for infinite retries. [default: 3]
+      --skip-if-merging
+          Skip committing while a merge, rebase, cherry-pick,
+          revert or bisect is in progress.
+          Prevents gitwatch from committing unresolved conflicts.
       --ssh-key <SSH_KEY>
           Path to the SSH private key to authenticate with.
           Disables the SSH agent, so a locked agent cannot block the push.

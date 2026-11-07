@@ -72,6 +72,16 @@ pub struct CliOptions {
     #[clap(long = "retries", default_value = "3", verbatim_doc_comment)]
     pub retries: i32,
 
+    /// Skip committing while a merge, rebase, cherry-pick,
+    /// revert or bisect is in progress.
+    /// Prevents gitwatch from committing unresolved conflicts.
+    #[clap(
+        long = "skip-if-merging",
+        default_value = "false",
+        verbatim_doc_comment
+    )]
+    pub skip_if_merging: bool,
+
     /// Path to the SSH private key to authenticate with.
     /// Disables the SSH agent, so a locked agent cannot block the push.
     #[clap(long = "ssh-key", verbatim_doc_comment)]

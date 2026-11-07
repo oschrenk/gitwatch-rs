@@ -4,7 +4,7 @@
 .SH NAME
 gitwatch\-rs
 .SH SYNOPSIS
-\fBgitwatch\-rs\fR [\fB\-m\fR|\fB\-\-commit\-message\fR] [\fB\-\-commit\-message\-script\fR] [\fB\-\-commit\-on\-start\fR] [\fB\-\-debounce\-seconds\fR] [\fB\-\-dry\-run\fR] [\fB\-i\fR|\fB\-\-ignore\-regex\fR] [\fB\-\-log\-level\fR] [\fB\-\-pull\-before\-push\fR] [\fB\-\-pull\-interval\-seconds\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-retries\fR] [\fB\-\-skip\-if\-merging\fR] [\fB\-\-ssh\-key\fR] [\fB\-w\fR|\fB\-\-watch\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIREPOSITORY\fR] 
+\fBgitwatch\-rs\fR [\fB\-m\fR|\fB\-\-commit\-message\fR] [\fB\-\-commit\-message\-script\fR] [\fB\-\-commit\-on\-start\fR] [\fB\-\-debounce\-seconds\fR] [\fB\-\-dry\-run\fR] [\fB\-i\fR|\fB\-\-ignore\-regex\fR] [\fB\-\-log\-level\fR] [\fB\-\-ntfy\-url\fR] [\fB\-\-ntfy\-url\-file\fR] [\fB\-\-pull\-before\-push\fR] [\fB\-\-pull\-interval\-seconds\fR] [\fB\-r\fR|\fB\-\-remote\fR] [\fB\-\-retries\fR] [\fB\-\-skip\-if\-merging\fR] [\fB\-\-ssh\-key\fR] [\fB\-w\fR|\fB\-\-watch\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIREPOSITORY\fR] 
 .SH DESCRIPTION
 .SH OPTIONS
 .TP
@@ -43,6 +43,16 @@ Set the log level
 
 .br
 [\fIpossible values: \fRtrace, debug, info, warn, error]
+.TP
+\fB\-\-ntfy\-url\fR=\fINTFY_URL\fR
+URL of an ntfy topic to stream (requires \-\-remote).
+Each message on the topic triggers a pull, so a push to the remote
+arrives without polling.
+Example: "https://ntfy.sh/my\-random\-topic".
+.TP
+\fB\-\-ntfy\-url\-file\fR=\fINTFY_URL_FILE\fR
+Path to a file that holds the ntfy topic URL.
+Keeps the URL out of the command line and service definitions.
 .TP
 \fB\-\-pull\-before\-push\fR
 Pull from the remote before pushing (requires \-\-remote).

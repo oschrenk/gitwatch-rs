@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use auth_git2::GitAuthenticator;
-use git2::{Oid, Repository, RepositoryState, Status, StatusOptions};
+use git2::{Oid, Remote, Repository, RepositoryState, Status, StatusOptions};
 use indoc::formatdoc;
 use log::{debug, info, trace, warn};
 use paris::formatter::colorize_string;
@@ -21,7 +21,7 @@ use regex::Regex;
 use crate::{commit_message::generate_commit_message, pull::pull_rebase};
 
 /// libssh2 has no timeout of its own, so a remote or SSH agent that never
-/// answers would block the push forever.
+/// answers would block a push or fetch forever.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct GitwatchRepo {
@@ -171,8 +171,10 @@ impl GitwatchRepo {
 
         if let Some(remote) = &self.remote {
             if self.pull_before_push {
-                pull_rebase(&self.git_repo, remote)
-                    .context(format!("Failed to pull from remote '{remote}'"))?;
+                pull_rebase(&self.git_repo, remote, |branch| {
+                    self.fetch_branch(remote, branch)
+                })
+                .context(format!("Failed to pull from remote '{remote}'"))?;
             }
             self.push_changes(remote)
                 .context(format!("Failed to push to remote '{remote}'"))?;
@@ -291,8 +293,29 @@ impl GitwatchRepo {
         let refspec = self.get_current_refspec()?;
         trace!("Pushing refspec: {refspec}");
 
+        self.run_remote_op("Push", remote_name, move |repo, remote, auth| {
+            auth.push(repo, remote, &[&refspec])
+        })?;
+        info!("Pushed changes to {remote_name}");
+        Ok(())
+    }
+
+    fn fetch_branch(&self, remote_name: &str, branch: &str) -> Result<()> {
+        let branch = branch.to_string();
+        self.run_remote_op("Fetch", remote_name, move |repo, remote, auth| {
+            auth.fetch(repo, remote, &[&branch], None)
+        })
+    }
+
+    /// Runs a network operation on its own thread and stops waiting after `push_timeout`.
+    fn run_remote_op<F>(&self, op: &str, remote_name: &str, f: F) -> Result<()>
+    where
+        F: FnOnce(&Repository, &mut Remote, &GitAuthenticator) -> Result<(), git2::Error>
+            + Send
+            + 'static,
+    {
         if self.push_in_flight.swap(true, Ordering::SeqCst) {
-            bail!("Previous push to {remote_name} has not returned yet");
+            bail!("Previous network operation with {remote_name} has not returned yet");
         }
 
         // the thread opens its own handle, because `Repository` cannot be shared between threads
@@ -305,27 +328,25 @@ impl GitwatchRepo {
             let result = (|| {
                 let repo = Repository::open(repo_path)?;
                 let mut remote = repo.find_remote(&remote)?;
-                auth.push(&repo, &mut remote, &[&refspec])?;
+                f(&repo, &mut remote, &auth)?;
                 anyhow::Ok(())
             })();
             in_flight.store(false, Ordering::SeqCst);
-            // Fails only if the push timed out and nobody is listening any more.
+            // Fails only if the operation timed out and nobody is listening any more.
             let _ = tx.send(result);
         });
 
         match rx.recv_timeout(self.push_timeout) {
-            Ok(result) => result?,
+            Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => bail!(
-                "Push to {remote_name} did not finish within {:?}; it keeps running in the background",
+                "{op} with {remote_name} did not finish within {:?}; it keeps running in the background",
                 self.push_timeout
             ),
             Err(RecvTimeoutError::Disconnected) => {
                 self.push_in_flight.store(false, Ordering::SeqCst);
-                bail!("Push to {remote_name} panicked")
+                bail!("{op} with {remote_name} panicked")
             }
         }
-        info!("Pushed changes to {remote_name}");
-        Ok(())
     }
 
     fn authenticator(&self) -> GitAuthenticator {
@@ -464,6 +485,39 @@ mod tests {
         let err = repo.process_changes().unwrap_err();
         assert!(
             format!("{err:#}").contains("has not returned yet"),
+            "Unexpected error: {err:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_fetch_times_out_instead_of_hanging() -> TestResult {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        thread::spawn(move || listener.incoming().collect::<Vec<_>>());
+
+        let temp_dir = init_test_repo()?;
+        let git_repo = Repository::open(temp_dir.path())?;
+        create_initial_commit(temp_dir.path(), &git_repo)?;
+        git_repo.remote_set_url("origin", &format!("ssh://git@127.0.0.1:{port}/x.git"))?;
+
+        let mut repo = GitwatchRepo::new(
+            temp_dir.path(),
+            Some("test".to_string()),
+            None,
+            None,
+            false,
+            true,
+            Some("origin".to_string()),
+            None,
+            false,
+        )?;
+        repo.push_timeout = TEST_PUSH_TIMEOUT;
+
+        fs::write(temp_dir.path().join("a.txt"), "a")?;
+        let err = repo.process_changes().unwrap_err();
+        assert!(
+            format!("{err:#}").contains("Fetch with origin did not finish within"),
             "Unexpected error: {err:#}"
         );
         Ok(())

@@ -1,19 +1,20 @@
 use anyhow::{bail, Context, Result};
-use auth_git2::GitAuthenticator;
 use git2::{build::CheckoutBuilder, AnnotatedCommit, ErrorCode, Oid, Repository};
 use log::{debug, info};
 
 /// Fetch the current branch from the given remote and integrate it into the
 /// local branch, rebasing local commits on top of the remote ones.
 /// Equivalent to `git pull --rebase <remote>` in the original gitwatch.
-pub fn pull_rebase(git_repo: &Repository, remote_name: &str) -> Result<()> {
+/// `fetch` receives the branch name and must fetch it from `remote_name`.
+pub fn pull_rebase(
+    git_repo: &Repository,
+    remote_name: &str,
+    fetch: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
     let branch = get_current_branch(git_repo)?;
     debug!("Pulling branch {branch} from remote {remote_name}");
 
-    let mut remote = git_repo.find_remote(remote_name)?;
-    GitAuthenticator::default()
-        .fetch(git_repo, &mut remote, &[&branch], None)
-        .context(format!("Failed to fetch branch '{branch}'"))?;
+    fetch(&branch).context(format!("Failed to fetch branch '{branch}'"))?;
 
     let fetch_head = git_repo
         .find_reference("FETCH_HEAD")
@@ -119,10 +120,19 @@ fn short_hash(oid: &Oid) -> String {
 mod tests {
     use std::{fs, path::Path};
 
+    use auth_git2::GitAuthenticator;
     use tempfile::TempDir;
     use testresult::TestResult;
 
     use super::*;
+
+    fn pull(repo: &Repository) -> Result<()> {
+        pull_rebase(repo, "origin", |branch| {
+            let mut remote = repo.find_remote("origin")?;
+            GitAuthenticator::default().fetch(repo, &mut remote, &[branch], None)?;
+            Ok(())
+        })
+    }
 
     struct TestSetup {
         _dir: TempDir,
@@ -203,7 +213,7 @@ mod tests {
         let setup = setup()?;
         let head_before = setup.repo.head()?.peel_to_commit()?.id();
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo)?;
 
         assert_eq!(setup.repo.head()?.peel_to_commit()?.id(), head_before);
         Ok(())
@@ -214,7 +224,7 @@ mod tests {
         let setup = setup()?;
         commit_to_remote(&setup, "remote.txt", "remote content")?;
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo)?;
 
         let head = setup.repo.head()?.peel_to_commit()?;
         assert_eq!(head.message().unwrap_or(""), "remote commit");
@@ -231,7 +241,7 @@ mod tests {
         commit_to_remote(&setup, "remote.txt", "remote content")?;
         commit_file(&setup.repo, "local.txt", "local content", "local commit")?;
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo)?;
 
         let head = setup.repo.head()?.peel_to_commit()?;
         assert_eq!(head.message().unwrap_or(""), "local commit");
@@ -250,7 +260,7 @@ mod tests {
         let head_before =
             commit_file(&setup.repo, "conflict.txt", "local content", "local commit")?;
 
-        let result = pull_rebase(&setup.repo, "origin");
+        let result = pull(&setup.repo);
 
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -272,7 +282,7 @@ mod tests {
         let head = setup.repo.head()?.peel_to_commit()?.id();
         setup.repo.set_head_detached(head)?;
 
-        let err = pull_rebase(&setup.repo, "origin").unwrap_err().to_string();
+        let err = pull(&setup.repo).unwrap_err().to_string();
         assert!(
             err.contains("detached HEAD"),
             "Unexpected error message: {err}"
@@ -287,7 +297,7 @@ mod tests {
         let workdir = setup.repo.workdir().unwrap();
         fs::write(workdir.join("initial.txt"), "local edit")?;
 
-        pull_rebase(&setup.repo, "origin")?;
+        pull(&setup.repo)?;
 
         assert!(workdir.join("remote.txt").exists());
         assert_eq!(

@@ -30,6 +30,7 @@ pub struct GitwatchRepo {
     dry_run: bool,
     ignore_regex: Option<Regex>,
     remote: Option<String>,
+    ssh_key: Option<PathBuf>,
     git_repo: Repository,
     repo_path: PathBuf,
     /// A timed-out push cannot be cancelled, so no new push starts until it returns.
@@ -45,6 +46,7 @@ impl GitwatchRepo {
         ignore_regex: Option<Regex>,
         dry_run: bool,
         remote: Option<String>,
+        ssh_key: Option<PathBuf>,
     ) -> Result<Self> {
         debug!("Opening git repository {}", repo_path.display());
         let repo = Repository::open(repo_path)?;
@@ -58,6 +60,7 @@ impl GitwatchRepo {
             remote,
             push_in_flight: Arc::new(AtomicBool::new(false)),
             push_timeout: PUSH_TIMEOUT,
+            ssh_key,
         };
         gitwatch_repo.validate_commit_message_script()?;
         gitwatch_repo.validate_remote()?;
@@ -273,12 +276,13 @@ impl GitwatchRepo {
         let repo_path = self.git_repo.path().to_path_buf();
         let remote = remote_name.to_string();
         let in_flight = Arc::clone(&self.push_in_flight);
+        let auth = self.authenticator();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let result = (|| {
                 let repo = Repository::open(repo_path)?;
                 let mut remote = repo.find_remote(&remote)?;
-                GitAuthenticator::default().push(&repo, &mut remote, &[&refspec])?;
+                auth.push(&repo, &mut remote, &[&refspec])?;
                 anyhow::Ok(())
             })();
             in_flight.store(false, Ordering::SeqCst);
@@ -299,6 +303,16 @@ impl GitwatchRepo {
         }
         info!("Pushed changes to {remote_name}");
         Ok(())
+    }
+
+    fn authenticator(&self) -> GitAuthenticator {
+        match &self.ssh_key {
+            // the default authenticator tries the agent first, which never returns while it is locked
+            Some(key_path) => GitAuthenticator::new_empty()
+                .add_default_username()
+                .add_ssh_key_from_file(key_path.clone(), None),
+            None => GitAuthenticator::default(),
+        }
     }
 
     #[cfg(not(tarpaulin_include))]
@@ -410,6 +424,7 @@ mod tests {
             None,
             false,
             Some("origin".to_string()),
+            None,
         )?;
         repo.push_timeout = TEST_PUSH_TIMEOUT;
 
@@ -439,6 +454,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert!(result.is_err());
         let err_str = result.err().unwrap().to_string();
@@ -460,6 +476,7 @@ mod tests {
             None,
             false,
             None,
+            None,
         );
         assert!(result.is_err());
         let err = result.err().unwrap();
@@ -478,6 +495,7 @@ mod tests {
             None,
             false,
             Some("nonexistent-remote".to_string()),
+            None,
         );
         assert!(result.is_err());
         let err_str = result.err().unwrap().to_string();
@@ -485,6 +503,29 @@ mod tests {
             err_str.contains("Remote 'nonexistent-remote' not found"),
             "Expected error about missing remote, got: {err_str}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_ssh_key_disables_agent() -> TestResult {
+        let temp_dir = init_test_repo()?;
+        let mut repo = GitwatchRepo::new(
+            temp_dir.path(),
+            Some("test".to_string()),
+            None,
+            None,
+            false,
+            None,
+            Some(PathBuf::from("/keys/deploy_ed25519")),
+        )?;
+
+        let auth = format!("{:?}", repo.authenticator());
+        assert!(auth.contains("try_ssh_agent: false"), "{auth}");
+        assert!(auth.contains("deploy_ed25519"), "{auth}");
+
+        repo.ssh_key = None;
+        let auth = format!("{:?}", repo.authenticator());
+        assert!(auth.contains("try_ssh_agent: true"), "{auth}");
         Ok(())
     }
 
@@ -498,6 +539,7 @@ mod tests {
             None,
             false,
             Some("origin".to_string()),
+            None,
         )?;
 
         // commit with empty index
@@ -530,6 +572,7 @@ mod tests {
             None,
             Some(Regex::new(".*foo.txt.*")?),
             false,
+            None,
             None,
         )?;
 

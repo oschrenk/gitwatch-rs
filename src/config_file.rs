@@ -19,6 +19,8 @@ pub struct ConfigFile {
     pub dry_run: Option<bool>,
     #[serde(default, with = "serde_regex")]
     pub ignore_regex: Option<Regex>,
+    pub ntfy_url: Option<String>,
+    pub ntfy_url_file: Option<PathBuf>,
     pub pull_before_push: Option<bool>,
     pub pull_interval_seconds: Option<u64>,
     pub remote: Option<String>,
@@ -82,6 +84,8 @@ mod tests {
         debounce_seconds: 5
         dry_run: true
         ignore_regex: "test.*"
+        ntfy_url: "https://ntfy.sh/topic"
+        ntfy_url_file: "url-file"
         pull_before_push: true
         pull_interval_seconds: 30
         remote: "origin"
@@ -104,6 +108,8 @@ mod tests {
         assert_eq!(config.debounce_seconds, Some(5));
         assert_eq!(config.dry_run, Some(true));
         assert_eq!(config.ignore_regex.as_ref().unwrap().as_str(), "test.*");
+        assert_eq!(config.ntfy_url, Some("https://ntfy.sh/topic".to_string()));
+        assert_eq!(config.ntfy_url_file, Some(PathBuf::from("url-file")));
         assert_eq!(config.pull_before_push, Some(true));
         assert_eq!(config.pull_interval_seconds, Some(30));
         assert_eq!(config.remote, Some("origin".to_string()));

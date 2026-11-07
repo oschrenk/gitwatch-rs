@@ -24,7 +24,7 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Watch(cli_opts) => {
             setup_logger(cli_opts.log_level)?;
-            let config = AppConfig::new(cli_opts)?;
+            let config = AppConfig::new(*cli_opts)?;
             let app = App::new(config)?;
             app.run(None)
         }

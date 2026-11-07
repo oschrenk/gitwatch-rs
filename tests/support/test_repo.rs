@@ -50,6 +50,7 @@ impl TestRepo {
             debounce_seconds: 0,
             ignore_regex: None,
             dry_run: false,
+            ntfy_url: None,
             retries: 0,
             commit_on_start: true,
             watch: false,

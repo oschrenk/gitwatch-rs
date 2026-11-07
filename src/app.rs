@@ -1,13 +1,18 @@
 use crate::{app_config::AppConfig, filter::PathFilter};
-use std::{path::PathBuf, sync::mpsc::Receiver, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::mpsc::{self, Receiver},
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use log::{debug, warn};
 
-use crate::{repo::GitwatchRepo, watcher::FileWatcher};
+use crate::{ntfy, repo::GitwatchRepo, watcher::FileWatcher};
 
 pub struct App {
     commit_on_start: bool,
+    ntfy_url: Option<String>,
     path_filter: PathFilter,
     repo: GitwatchRepo,
     repo_path: PathBuf,
@@ -38,6 +43,7 @@ impl App {
 
         Ok(Self {
             commit_on_start: config.commit_on_start,
+            ntfy_url: config.ntfy_url,
             path_filter,
             repo,
             repo_path: config.repository,
@@ -58,6 +64,12 @@ impl App {
             return Ok(());
         }
 
+        let pull_rx = self.ntfy_url.clone().map(|url| {
+            let (pull_tx, pull_rx) = mpsc::channel();
+            ntfy::spawn_listener(url, pull_tx);
+            pull_rx
+        });
+
         self.watcher.watch(
             &self.repo_path,
             |paths| {
@@ -70,6 +82,7 @@ impl App {
                     warn!("Scheduled pull failed: {e:#}");
                 }
             },
+            pull_rx,
             shutdown_rx,
         )
     }

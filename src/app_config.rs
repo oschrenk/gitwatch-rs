@@ -1,7 +1,7 @@
 use crate::{cli::CliOptions, config_file::ConfigFile, util::normalize_path};
 use anyhow::{bail, Context, Result};
 use regex::Regex;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 #[derive(Clone, Debug, Default)]
 pub struct AppConfig {
@@ -11,6 +11,8 @@ pub struct AppConfig {
     pub debounce_seconds: u64,
     pub dry_run: bool,
     pub ignore_regex: Option<Regex>,
+    /// Resolved from either `ntfy_url` or the content of `ntfy_url_file`.
+    pub ntfy_url: Option<String>,
     pub pull_before_push: bool,
     pub pull_interval_seconds: Option<u64>,
     pub remote: Option<String>,
@@ -80,6 +82,25 @@ impl AppConfig {
             cli_config.ignore_regex
         };
 
+        let ntfy_url = match (
+            file_config.ntfy_url.or(cli_config.ntfy_url),
+            file_config.ntfy_url_file.or(cli_config.ntfy_url_file),
+        ) {
+            (Some(_), Some(_)) => bail!("Only one of ntfy-url or ntfy-url-file can be set"),
+            (url, None) => url,
+            (None, Some(file_path)) => {
+                let file_path = normalize_path(&file_path).context(format!(
+                    "Invalid ntfy URL file path '{}'",
+                    file_path.display()
+                ))?;
+                let url = fs::read_to_string(&file_path).context(format!(
+                    "Failed to read ntfy URL file '{}'",
+                    file_path.display()
+                ))?;
+                Some(url.trim().to_string())
+            }
+        };
+
         let pull_before_push = file_config
             .pull_before_push
             .unwrap_or(cli_config.pull_before_push);
@@ -119,6 +140,7 @@ impl AppConfig {
             debounce_seconds,
             dry_run,
             ignore_regex,
+            ntfy_url,
             pull_before_push,
             pull_interval_seconds,
             remote,
@@ -144,6 +166,15 @@ impl AppConfig {
             }
             Some(0) => bail!("pull-interval-seconds must be > 0"),
             _ => {}
+        }
+
+        if let Some(url) = &self.ntfy_url {
+            if self.remote.is_none() {
+                bail!("ntfy-url requires a remote to be set");
+            }
+            if !url.starts_with("https://") && !url.starts_with("http://") {
+                bail!("ntfy-url must start with https:// or http://");
+            }
         }
 
         if !self.repository.exists() {
@@ -257,6 +288,7 @@ mod tests {
             ssh_key: None,
             commit_on_start: false,
             watch: true,
+            ntfy_url: None,
             pull_before_push: true,
             pull_interval_seconds: None,
             remote: Some("origin".to_string()),
@@ -319,6 +351,68 @@ mod tests {
     }
 
     #[test]
+    fn test_config_ntfy_url_file() -> TestResult {
+        let temp_dir = tempfile::tempdir()?;
+        let repo = temp_dir.path().to_str().unwrap();
+        let url_file = temp_dir.path().join("ntfy-url");
+        fs::write(&url_file, "https://ntfy.sh/topic\n")?;
+        let url_file = url_file.to_str().unwrap();
+
+        let opts = CliOptions::parse_from([
+            "gitwatch",
+            repo,
+            "--commit-message",
+            TEST_COMMIT_MESSAGE,
+            "--remote=origin",
+            "--ntfy-url-file",
+            url_file,
+        ]);
+        let config = AppConfig::new(opts)?;
+        assert_eq!(config.ntfy_url.as_deref(), Some("https://ntfy.sh/topic"));
+
+        let both_flags = CliOptions::try_parse_from([
+            "gitwatch",
+            repo,
+            "--ntfy-url=https://ntfy.sh/topic",
+            "--ntfy-url-file",
+            url_file,
+        ]);
+        assert!(both_flags.is_err());
+
+        let missing_file = CliOptions::parse_from([
+            "gitwatch",
+            repo,
+            "--ntfy-url-file",
+            temp_dir.path().join("missing").to_str().unwrap(),
+        ]);
+        let err = AppConfig::new(missing_file).unwrap_err().to_string();
+        assert!(err.contains("Invalid ntfy URL file path"), "{err}");
+
+        fs::write(
+            temp_dir.path().join("gitwatch.yaml"),
+            "ntfy_url: \"https://ntfy.sh/topic\"",
+        )?;
+        let file_url_and_cli_file = CliOptions::parse_from([
+            "gitwatch",
+            repo,
+            "--commit-message",
+            TEST_COMMIT_MESSAGE,
+            "--remote=origin",
+            "--ntfy-url-file",
+            url_file,
+        ]);
+        let err = AppConfig::new(file_url_and_cli_file)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Only one of ntfy-url or ntfy-url-file"),
+            "{err}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn test_config_validation() -> TestResult {
         let temp_dir = tempfile::tempdir()?;
         let repo_path = temp_dir.path().to_path_buf();
@@ -337,6 +431,7 @@ mod tests {
             retries: 3,
             ssh_key: None,
             dry_run: false,
+            ntfy_url: None,
             pull_before_push: false,
             pull_interval_seconds: None,
             remote: None,
@@ -449,6 +544,28 @@ mod tests {
             .to_string()
             .contains("pull-interval-seconds must be > 0"));
 
+        let ntfy_without_remote = AppConfig {
+            ntfy_url: Some("https://ntfy.sh/topic".to_string()),
+            remote: None,
+            ..valid_config.clone()
+        };
+        assert!(ntfy_without_remote
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("ntfy-url requires a remote to be set"));
+
+        let ntfy_without_scheme = AppConfig {
+            ntfy_url: Some("ntfy.sh/topic".to_string()),
+            remote: Some("origin".to_string()),
+            ..valid_config.clone()
+        };
+        assert!(ntfy_without_scheme
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("ntfy-url must start with https:// or http://"));
+
         let nonexistent_repo_path = AppConfig {
             repository: PathBuf::from("/nonexistent/path"),
             ..valid_config.clone()
@@ -482,6 +599,8 @@ mod tests {
             retries: 3,
             ssh_key: None,
             dry_run: false,
+            ntfy_url: None,
+            ntfy_url_file: None,
             pull_before_push: false,
             pull_interval_seconds: None,
             remote: None,
@@ -517,6 +636,8 @@ mod tests {
             retries: 3,
             ssh_key: None,
             dry_run: false,
+            ntfy_url: None,
+            ntfy_url_file: None,
             pull_before_push: false,
             pull_interval_seconds: None,
             remote: None,
@@ -616,6 +737,8 @@ mod tests {
             dry_run: false,
             ignore_regex: Some(Regex::new("cli_ignore.*").unwrap()),
             log_level: LogLevel::Info,
+            ntfy_url: None,
+            ntfy_url_file: None,
             pull_before_push: false,
             pull_interval_seconds: None,
             remote: Some("cli_remote".to_string()),

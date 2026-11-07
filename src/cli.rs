@@ -19,7 +19,7 @@ pub struct Cli {
 #[derive(Parser)]
 pub enum Commands {
     /// Watch a repository and commit changes
-    Watch(CliOptions),
+    Watch(Box<CliOptions>),
 
     /// Generate shell completion scripts
     Completion {
@@ -61,6 +61,22 @@ pub struct CliOptions {
     /// Set the log level
     #[arg(long, value_enum, default_value_t = LogLevel::Info)]
     pub log_level: LogLevel,
+
+    /// URL of an ntfy topic to stream (requires --remote).
+    /// Each message on the topic triggers a pull, so a push to the remote
+    /// arrives without polling.
+    /// Example: "https://ntfy.sh/my-random-topic".
+    #[clap(long = "ntfy-url", verbatim_doc_comment)]
+    pub ntfy_url: Option<String>,
+
+    /// Path to a file that holds the ntfy topic URL.
+    /// Keeps the URL out of the command line and service definitions.
+    #[clap(
+        long = "ntfy-url-file",
+        conflicts_with = "ntfy_url",
+        verbatim_doc_comment
+    )]
+    pub ntfy_url_file: Option<PathBuf>,
 
     /// Pull from the remote before pushing (requires --remote).
     /// Fetches the current branch and rebases the local commits on top of it,

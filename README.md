@@ -79,6 +79,14 @@ Options:
           Example: "\.tmp$" to ignore temporary files.
       --log-level <LOG_LEVEL>
           Set the log level [default: info] [possible values: trace, debug, info, warn, error]
+      --ntfy-url <NTFY_URL>
+          URL of an ntfy topic to stream (requires --remote).
+          Each message on the topic triggers a pull, so a push to the remote
+          arrives without polling.
+          Example: "https://ntfy.sh/my-random-topic".
+      --ntfy-url-file <NTFY_URL_FILE>
+          Path to a file that holds the ntfy topic URL.
+          Keeps the URL out of the command line and service definitions.
       --pull-before-push
           Pull from the remote before pushing (requires --remote).
           Fetches the current branch and rebases the local commits on top of it,
@@ -175,6 +183,37 @@ services.gitwatch = {
   };
 }
 ```
+
+</details>
+
+<details><summary><b>Pull on push with ntfy</b></summary>
+
+With `--ntfy-url`, gitwatch keeps one outbound connection to an [ntfy](https://ntfy.sh) topic and pulls when a message arrives.
+A GitHub webhook posts to the topic on every push, so the watched machine needs no open port and no polling.
+`--pull-interval-seconds` still works as a slow fallback.
+
+1. Pick a long random topic. Anyone who knows the topic URL can read it and trigger a pull.
+   ```sh
+   echo "https://ntfy.sh/gitwatch-$(openssl rand -hex 16)"
+   ```
+2. Add a webhook to the GitHub repository.
+   The `tpl` and `m` query parameters make ntfy keep only `push <ref>` from the GitHub payload.
+   Without them, ntfy stores the whole payload, commit messages and author emails included, as a public attachment.
+   ```sh
+   gh api repos/<owner>/<repo>/hooks \
+     -f name=web \
+     -f "config[url]=<topic-url>?tpl=1&m=push%20%7B%7B.ref%7D%7D" \
+     -f 'config[content_type]=json' \
+     -f 'events[]=push'
+   ```
+3. Start gitwatch with the topic URL.
+   For a service, put the URL in a file readable only by its user and pass `--ntfy-url-file`, so the URL stays out of the service definition and `ps`.
+   Do not set `ntfy_url` in `gitwatch.yaml`: the file sits inside the watched repository, so gitwatch commits it.
+   ```sh
+   gitwatch watch --remote origin --ntfy-url-file ~/.config/gitwatch/ntfy-url /path/to/repo
+   ```
+
+After a dropped connection, gitwatch reconnects with a backoff from 1 to 60 seconds and replays the messages it missed.
 
 </details>
 

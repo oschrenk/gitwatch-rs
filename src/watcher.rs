@@ -28,13 +28,15 @@ impl FileWatcher {
         }
     }
 
-    /// `on_idle` runs every `idle_interval` while no change event arrives.
+    /// `on_idle` runs every `idle_interval`, and after signals on `pull_rx`,
+    /// while no change event arrives. A burst of signals runs it once.
     pub fn watch<F, P, I>(
         &self,
         path: &Path,
         on_change: F,
         is_path_ignored: P,
         on_idle: I,
+        pull_rx: Option<Receiver<()>>,
         shutdown_rx: Option<Receiver<()>>,
     ) -> Result<()>
     where
@@ -71,11 +73,13 @@ impl FileWatcher {
                     Err(errors) => errors.iter().for_each(|error| error!("{error:?}")),
                 },
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(interval) = self.idle_interval {
-                        if last_idle_run.elapsed() >= interval {
-                            on_idle();
-                            last_idle_run = Instant::now();
-                        }
+                    let signalled = pull_rx.as_ref().is_some_and(|rx| rx.try_iter().count() > 0);
+                    let interval_due = self
+                        .idle_interval
+                        .is_some_and(|interval| last_idle_run.elapsed() >= interval);
+                    if signalled || interval_due {
+                        on_idle();
+                        last_idle_run = Instant::now();
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -157,7 +161,7 @@ mod tests {
         fs::remove_dir_all(&path)?;
 
         // try to watch - should get notify error
-        let result = watcher.watch(&path, |_| Ok(()), |_path| false, || {}, None);
+        let result = watcher.watch(&path, |_| Ok(()), |_path| false, || {}, None, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
 
@@ -192,6 +196,7 @@ mod tests {
                 },
                 |_path| false,
                 || {},
+                None,
                 Some(shutdown_rx),
             )
         });
@@ -248,6 +253,7 @@ mod tests {
                 },
                 |_| false,
                 || {},
+                None,
                 Some(shutdown_rx),
             )
         });
@@ -273,6 +279,41 @@ mod tests {
 
         // verify no additional changes were detected
         assert_eq!(counter_before_shutdown, counter.load(Ordering::SeqCst));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pull_signal_runs_on_idle() -> TestResult {
+        let temp_dir = tempfile::tempdir()?;
+        let temp_dir_path = temp_dir.path().to_owned();
+        let (pull_tx, pull_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let idle_runs = Arc::new(AtomicU32::new(0));
+        let idle_runs_clone = idle_runs.clone();
+
+        pull_tx.send(())?;
+        pull_tx.send(())?;
+
+        let watcher = FileWatcher::new(0, 0, None);
+        let handle = thread::spawn(move || {
+            watcher.watch(
+                &temp_dir_path,
+                |_| Ok(()),
+                |_| false,
+                || {
+                    idle_runs_clone.fetch_add(1, Ordering::SeqCst);
+                },
+                Some(pull_rx),
+                Some(shutdown_rx),
+            )
+        });
+
+        thread::sleep(Duration::from_millis(300));
+
+        shutdown_tx.send(())?;
+        handle.join().expect("Thread panicked")?;
+        assert_eq!(idle_runs.load(Ordering::SeqCst), 1);
 
         Ok(())
     }
